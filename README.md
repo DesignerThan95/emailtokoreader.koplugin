@@ -1,43 +1,30 @@
-# Email to KOReader
+# Email to KOReader (Streaming Architecture Fork)
 
 Automatically download EPUB files from your email directly to your KOReader device.
 
----
+> **Note on this fork:** This version features a completely rebuilt, embedded-safe streaming IMAP parser designed specifically for low-memory e-ink devices like the Kindle Paperwhite. 
 
-## Version
-**1.1.1**
-[View Changelog](https://github.com/marinov752/emailtokoreader.koplugin/wiki/Changelog)
+## 🚀 The Streaming Refactor
+The original version of this plugin processed emails by loading the entire payload into memory and running heavy regex scans, which could cause watchdog freezes and crashes on 800MHz e-ink hardware when downloading large (5MB+) EPUBs. 
 
----
+This fork introduces a **True Streaming Architecture**:
+* **IMAP Literal Accounting:** Reads exact byte counts to prevent protocol strings from corrupting the EPUB ZIP structure.
+* **Bounded Memory Usage:** Decodes Base64 payloads directly to disk in 8KB mathematically aligned chunks.
+* **UI Yielding:** Cooperatively yields to the KOReader UI loop to prevent device watchdog lockups.
+* **Strict RFC MIME Parsing:** Accurately isolates payloads and prevents random truncation from nested email boundaries.
+* **Atomic Filesystem Writes:** Safely writes to `.tmp` files and renames them only upon successful verification.
 
-## Features
-- [Email Integration](https://github.com/marinov752/emailtokoreader.koplugin/wiki/Usage) — fetch EPUB attachments directly from your inbox  
-- Multi-file downloads: handle multiple EPUBs per email  
-- Multi-email processing: up to 3 unread emails per check  
-- File support: up to **3.5 MB** per EPUB  
-- Auto-refresh: updates file browser automatically  
-- [In-App Configuration](https://github.com/marinov752/emailtokoreader.koplugin/wiki/Configuration): no manual file editing  
-- [Debug Mode](https://github.com/marinov752/emailtokoreader.koplugin/wiki/Advanced-Settings): optional detailed logging  
-- [Gmail Support](https://github.com/marinov752/emailtokoreader.koplugin/wiki/Configuration#step-1-get-gmail-app-password): works with app passwords  
+## 📦 Installation
+1. Download the latest version of this repository.
+2. Place the `emailtokoreader.koplugin` folder into your KOReader `plugins` directory (usually `koreader/plugins/`).
+3. Open `config.lua` and add your email credentials (use an App Password if using Gmail).
+4. Restart KOReader.
 
----
+## 📖 Usage & Filename Requirements
+Because KOReader's internal library scanner relies on standard naming conventions to extract metadata, **your EPUB attachments must be named precisely**.
 
-## Quick Start
-1. [Install the Plugin](https://github.com/marinov752/emailtokoreader.koplugin/wiki/Installation)  
-2. [Configure Settings](https://github.com/marinov752/emailtokoreader.koplugin/wiki/Configuration)  
-3. [Download Books](https://github.com/marinov752/emailtokoreader.koplugin/wiki/Usage)  
+* **Format:** `Book Title - Author Name.epub`
+* **Valid Example:** `The Martian - Andy Weir.epub`
+* **Invalid Example:** `The-Martian-Andy-Weir.epub` *(Dashes instead of spaces will cause KOReader to fail to read the EPUB format!)*
 
----
-
-## Full Documentation
-Explore the full guides in the Wiki:
-
-- [Installation](https://github.com/marinov752/emailtokoreader.koplugin/wiki/Installation)  
-- [Configuration](https://github.com/marinov752/emailtokoreader.koplugin/wiki/Configuration)  
-- [Usage](https://github.com/marinov752/emailtokoreader.koplugin/wiki/Usage)  
-- [Advanced Settings](https://github.com/marinov752/emailtokoreader.koplugin/wiki/Advanced-Settings)  
-- [Troubleshooting](https://github.com/marinov752/emailtokoreader.koplugin/wiki/Troubleshooting)  
-- [Technical Details](https://github.com/marinov752/emailtokoreader.koplugin/wiki/Technical-Details)  
-- [Privacy & Security](https://github.com/marinov752/emailtokoreader.koplugin/wiki/Privacy-and-Security)  
-- [Changelog](https://github.com/marinov752/emailtokoreader.koplugin/wiki/Changelog)  
-- [License & Credits](https://github.com/marinov752/emailtokoreader.koplugin/wiki/License-and-Credits)  
+To trigger a download, simply open KOReader's top menu, navigate to **Tools > Email to KOReader**, and tap **Check Inbox**.
