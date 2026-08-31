@@ -4,10 +4,19 @@ local encoding = require("encoding")
 
 local attachment = {}
 
-function attachment.process_stream(stream_iter, download_path, tick_cb)
+function attachment.process_stream(stream_iter, download_path, tick_cb, allowed_extensions)
     local state = "SEARCHING"
     local current_boundary = nil
-    
+
+    -- Build a lookup set of the accepted extensions (lowercase, without dot)
+    local allowed_set = {}
+    for _, ext in ipairs(allowed_extensions or {"epub"}) do
+        local key = tostring(ext):lower():match("^%.?(.+)$")
+        if key then
+            allowed_set[key] = true
+        end
+    end
+
     local header_lines = {}
     local current_filename = nil
     local is_base64 = false
@@ -95,8 +104,20 @@ function attachment.process_stream(stream_iter, download_path, tick_cb)
                     is_base64 = true
                 end
                 
-                local fname = header_block:match('name="?([^"]+%.epub)"?') or header_block:match('filename="?([^"]+%.epub)"?')
-                
+                -- Generic filename detection (quoted first, then unquoted)
+                local fname = header_block:match('filename="([^"]+)"')
+                    or header_block:match('name="([^"]+)"')
+                    or header_block:match('filename=([^%s;"]+)')
+                    or header_block:match('name=([^%s;"]+)')
+
+                -- Only accept the attachment if its extension is allowed
+                if fname then
+                    local ext = fname:match("%.([^%.]+)$")
+                    if not (ext and allowed_set[ext:lower()]) then
+                        fname = nil
+                    end
+                end
+
                 if fname and is_base64 then
                     local decode_ok, decoded_name = pcall(encoding.decode_rfc2047, fname)
                     if decode_ok and decoded_name then
