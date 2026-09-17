@@ -1,6 +1,7 @@
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local UIManager = require("ui/uimanager")
 local InfoMessage = require("ui/widget/infomessage")
+local MultiInputDialog = require("ui/widget/multiinputdialog")
 local DownloadMgr = require("ui/downloadmgr")
 local Dispatcher = require("dispatcher")
 local NetworkMgr = require("ui/network/manager")
@@ -37,6 +38,114 @@ local attachment = require("attachment")
 local DEFAULT_EXTENSIONS = {"epub"}
 -- Extensions always offered in the menu; anything configured elsewhere is added on top
 local MENU_EXTENSIONS = {"epub", "acsm", "pdf", "mobi", "cbz"}
+
+-- 3. Writing config.lua back from the settings dialog
+-- Known keys are written first in this order; any other keys follow alphabetically
+local CONFIG_KEY_ORDER = {
+    "email", "password", "imap_server", "imap_port", "use_ssl",
+    "download_path", "allowed_extensions",
+}
+
+local LUA_KEYWORDS = {}
+for word in ([[and break do else elseif end false for function goto if in
+    local nil not or repeat return then true until while]]):gmatch("%a+") do
+    LUA_KEYWORDS[word] = true
+end
+
+local serialize_value
+
+local function serialize_key(key, indent)
+    if type(key) == "string" and key:match("^[%a_][%w_]*$") and not LUA_KEYWORDS[key] then
+        return key
+    end
+    return "[" .. serialize_value(key, indent) .. "]"
+end
+
+local function sorted_keys(tbl, skip)
+    local array_len = #tbl
+    local keys = {}
+    for k in pairs(tbl) do
+        local is_array_index = type(k) == "number" and k >= 1 and k <= array_len and k % 1 == 0
+        if not is_array_index and not (skip and skip[k]) then
+            table.insert(keys, k)
+        end
+    end
+    table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+    return keys
+end
+
+-- Error messages only name the offending type, never the value (the password lives in here)
+serialize_value = function(value, indent)
+    local value_type = type(value)
+    if value_type == "string" then
+        return string.format("%q", value)
+    elseif value_type == "boolean" then
+        return tostring(value)
+    elseif value_type == "number" then
+        if value ~= value or value == math.huge or value == -math.huge then
+            error("cannot save a non-finite number")
+        end
+        return tostring(value)
+    elseif value_type == "table" then
+        local inner = indent .. "    "
+        local parts = {}
+        for i = 1, #value do
+            table.insert(parts, inner .. serialize_value(value[i], inner))
+        end
+        for _, k in ipairs(sorted_keys(value)) do
+            table.insert(parts, inner .. serialize_key(k, inner) .. " = " .. serialize_value(value[k], inner))
+        end
+        if #parts == 0 then return "{}" end
+        return "{\n" .. table.concat(parts, ",\n") .. ",\n" .. indent .. "}"
+    end
+    error("cannot save a value of type " .. value_type)
+end
+
+local function serialize_config(cfg)
+    local parts = {}
+    local known = {}
+    for _, k in ipairs(CONFIG_KEY_ORDER) do
+        known[k] = true
+        if cfg[k] ~= nil then
+            table.insert(parts, "    " .. k .. " = " .. serialize_value(cfg[k], "    "))
+        end
+    end
+    for _, k in ipairs(sorted_keys(cfg, known)) do
+        table.insert(parts, "    " .. serialize_key(k, "    ") .. " = " .. serialize_value(cfg[k], "    "))
+    end
+    return "return {\n" .. table.concat(parts, ",\n") .. ",\n}\n"
+end
+
+-- Writes to a temp file first so a failed write can't leave a truncated config.lua behind
+local function write_config(cfg)
+    local ok, content = pcall(serialize_config, cfg)
+    if not ok then return false, content end
+
+    local tmp_path = config_path .. ".tmp"
+    local file, open_err = io.open(tmp_path, "w")
+    if not file then return false, open_err end
+
+    local written, write_err = file:write(content)
+    local closed, close_err = file:close()
+    if not written or not closed then
+        os.remove(tmp_path)
+        return false, write_err or close_err
+    end
+
+    local renamed, rename_err = os.rename(tmp_path, config_path)
+    if not renamed then
+        os.remove(tmp_path)
+        return false, rename_err
+    end
+    return true
+end
+
+local function trim(s)
+    return (s or ""):match("^%s*(.-)%s*$")
+end
+
+local TRUE_WORDS = { ["true"] = true, yes = true, on = true, ["1"] = true }
+local FALSE_WORDS = { ["false"] = true, no = true, off = true, ["0"] = true }
 
 local plugin = WidgetContainer:extend{
     name = "Email to KOReader",
@@ -159,6 +268,120 @@ function plugin:chooseDownloadFolder()
     }:chooseDir(start_path)
 end
 
+local function show_error(text)
+    UIManager:show(InfoMessage:new{
+        text = text,
+        timeout = 4,
+    })
+end
+
+function plugin:showSettingsDialog(touchmenu_instance)
+    local dialog
+
+    local function save()
+        local fields = dialog:getFields()
+        local email = trim(fields[1])
+        -- Passwords are kept verbatim, surrounding spaces may be intended
+        local password = fields[2] or ""
+        local imap_server = trim(fields[3])
+        local port_text = trim(fields[4])
+        local ssl_text = trim(fields[5]):lower()
+
+        if imap_server == "" then
+            return show_error(_("IMAP server must not be empty."))
+        end
+
+        local imap_port = port_text:match("^%d+$") and tonumber(port_text)
+        if not imap_port or imap_port < 1 or imap_port > 65535 then
+            return show_error(_("IMAP port must be a whole number between 1 and 65535."))
+        end
+
+        local use_ssl
+        if TRUE_WORDS[ssl_text] then
+            use_ssl = true
+        elseif FALSE_WORDS[ssl_text] then
+            use_ssl = false
+        else
+            return show_error(_("Use SSL must be \"true\" or \"false\"."))
+        end
+
+        -- Build the new config on a copy so a failed write leaves the running config untouched
+        local new_config = {}
+        for k, v in pairs(config) do new_config[k] = v end
+        new_config.email = email
+        new_config.password = password
+        new_config.imap_server = imap_server
+        new_config.imap_port = imap_port
+        new_config.use_ssl = use_ssl
+
+        local ok, err = write_config(new_config)
+        if not ok then
+            return show_error(_("Could not save config.lua:\n") .. tostring(err))
+        end
+
+        for k, v in pairs(new_config) do config[k] = v end
+
+        UIManager:close(dialog)
+        if touchmenu_instance then
+            touchmenu_instance:updateItems()
+        end
+        UIManager:show(InfoMessage:new{
+            text = _("Settings saved."),
+            timeout = 2,
+        })
+    end
+
+    dialog = MultiInputDialog:new{
+        title = _("Email to KOReader settings"),
+        fields = {
+            {
+                description = _("Email"),
+                text = config.email or "",
+                hint = "your_email@gmail.com",
+            },
+            {
+                description = _("Password"),
+                text = config.password or "",
+                text_type = "password",
+            },
+            {
+                description = _("IMAP server"),
+                text = config.imap_server or "",
+                hint = "imap.gmail.com",
+            },
+            {
+                description = _("IMAP port"),
+                text = config.imap_port and tostring(config.imap_port) or "",
+                hint = "993",
+                input_type = "number",
+            },
+            {
+                description = _("Use SSL (true / false)"),
+                text = tostring(config.use_ssl ~= false),
+                hint = "true",
+            },
+        },
+        buttons = {
+            {
+                {
+                    text = _("Cancel"),
+                    id = "close",
+                    callback = function()
+                        UIManager:close(dialog)
+                    end,
+                },
+                {
+                    text = _("Save"),
+                    is_enter_default = true,
+                    callback = save,
+                },
+            },
+        },
+    }
+    UIManager:show(dialog)
+    dialog:onShowKeyboard()
+end
+
 function plugin:addToMainMenu(menu_items)
     menu_items.emailtokoreader = {
         text = _("Email to KOReader"),
@@ -166,9 +389,22 @@ function plugin:addToMainMenu(menu_items)
         sub_item_table = {
             {
                 text = _("Check Inbox"),
-                separator = true,
                 callback = function()
                     self:checkInbox()
+                end,
+            },
+            {
+                text_func = function()
+                    local email = config.email
+                    if not email or email == "" then
+                        email = _("not set")
+                    end
+                    return _("Settings: ") .. email
+                end,
+                keep_menu_open = true,
+                separator = true,
+                callback = function(touchmenu_instance)
+                    self:showSettingsDialog(touchmenu_instance)
                 end,
             },
             {
