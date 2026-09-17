@@ -1,3 +1,6 @@
+-- The account settings below can also be edited on the device under
+-- Tools > Email to KOReader > Settings. Saving there rewrites config.lua
+-- and removes these comments.
 local config = {
     -- Your email credentials
     email = "your_email@gmail.com",
